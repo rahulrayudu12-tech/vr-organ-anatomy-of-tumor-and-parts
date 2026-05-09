@@ -1,0 +1,90 @@
+# ═══════════════════════════════════════════════════════════════════════
+# docker-compose.yml — MediVR Backend Services
+# Run: docker-compose up
+# ═══════════════════════════════════════════════════════════════════════
+version: "3.9"
+
+services:
+
+  # ── FastAPI + AI pipeline ─────────────────────────────────────────────
+  api:
+    build:
+      context: ./ai-backend
+      dockerfile: Dockerfile
+    container_name: medivr_api
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./ai-backend:/app
+      - ./data:/app/data
+      - ./checkpoints:/app/checkpoints
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - UPLOAD_DIR=/app/data/uploads
+      - MESH_DIR=/app/data/meshes
+      - LOG_LEVEL=info
+    depends_on:
+      - redis
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ── Celery worker ─────────────────────────────────────────────────────
+  worker:
+    build:
+      context: ./ai-backend
+      dockerfile: Dockerfile
+    container_name: medivr_worker
+    command: celery -A main worker --loglevel=info --concurrency=2
+    volumes:
+      - ./ai-backend:/app
+      - ./data:/app/data
+      - ./checkpoints:/app/checkpoints
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - redis
+      - api
+    restart: unless-stopped
+
+  # ── Redis (Celery broker + result backend) ────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: medivr_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── MinIO (S3-compatible storage) ─────────────────────────────────────
+  minio:
+    image: minio/minio:latest
+    container_name: medivr_minio
+    ports:
+      - "9000:9000"
+      - "9001:9001"   # MinIO console
+    volumes:
+      - minio_data:/data
+    environment:
+      MINIO_ROOT_USER: medivr
+      MINIO_ROOT_PASSWORD: medivr_secret
+    command: server /data --console-address ":9001"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  redis_data:
+  minio_data:
